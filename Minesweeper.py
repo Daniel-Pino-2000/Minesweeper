@@ -1,382 +1,714 @@
-from random import randrange
-from turtle import Screen, Turtle
-from time import sleep
+import pygame
+import random
+import json
+import os
 from datetime import datetime
-import shelve
-import atexit
-import sys
+from enum import Enum
 
-class Minesweeper:
-    
-    HiddenCell = None
-    MinedCell = True
-    FreeCell = False
+# Initialize Pygame
+pygame.init()
 
-    def __init__(self, mines, rows, columns, board=None, board2=None,\
-                 symbol=None, flag=None, cells_to_show=None,\
-                 cells_shown=None, visited_cells=None, turns=None,\
-                 assistant=None, assistant2=None):
-        self.mines = mines
-        self.rows = rows
-        self.columns = columns
-        # self.board initiates with every cell free of mines and then it locates the
-        # mines randomly
-        self.board = self.create_matrix(self.FreeCell) if board is None else board 
-        # self.board2 initiates with every hiden cell to draw the board of the initial
-        # game.        
-        self.board2 = self.create_matrix(self.HiddenCell) if board2 is None else board
-        # In each cell of self.symbol it writes the number of mines that surrounds it.
-        self.symbol = self.create_matrix(self.HiddenCell) if symbol is None else symbol
-        # In the matrix self.flag are located the cells that contains flags.
-        self.flag = self.create_matrix(self.HiddenCell) if flag is None else flag 
-        self.cells_to_show = self.create_matrix(0) if cells_to_show is None else cells_to_show
-        # In cells_shown are the cells that are already shown and shouldn´t be visited.
-        self.cells_shown = self.create_matrix(0) if cells_shown is None else cells_shown
-        # visited cells saves the cells already visited.
-        self.visited_cells = set() if visited_cells is None else visited_cells
-        # self.turns counts the turns that the game last.
-        self.turns = 0 if turns is None else turns
-        self.assistant = [0] if assistant is None else assistant        
-        self.assistant2 = self.create_matrix(None) if assistant2 is None else assistant2
-        self.screen = self.create_screen()
-        self.turtle = self.create_turtle()
-        # Shows the current date.
-        self.today = datetime.now()
-        # Tells you if the game is over or not.
-        self.end = False
-        self.db = shelve.open("minesweeper.dbm")
-        self.drawing = False
-        atexit.register(self.exit)
-    
-    def create_screen(self):
-        screen = Screen()
-        screen.setup(self.columns*50, self.rows*50)
-        screen.screensize(self.columns*50, self.rows*50)
-        screen.setworldcoordinates(-.5, -.5, self.columns+.5, self.rows+.5)
-        screen.delay(0)
-        screen.onclick(self.left_click)
-        if sys.platform == "darwin":
-            screen.onclick(self.right_click, 2)
-        else:
-            screen.onclick(self.right_click, 3) 
-        return screen
-    
-    def create_turtle(self):
-        turtle = Turtle()
-        turtle.hideturtle()
-        turtle.speed('fastest')
-        return turtle
-    
-    def start(self):
-        if self.turns == 0:
-            self.locate_mines()
-            self.fill_symbols()
-            self.draw_board(self.board2)
-        else:
-            for i in range(len(self.symbol)):
-                for j in range(len(self.symbol[0])):            
-                    self.draw_cell(self.assistant2, self.symbol, i, j)
-                    if self.flag[i][j] == 1:
-                        self.turtle.penup()
-                        self.turtle.goto(j+.4, i+.2)
-                        self.turtle.pendown()
-                        self.turtle.pencolor('yellow')
-                        self.turtle.goto(j+.4, i+.8)
-                        self.turtle.goto(j+.7, i+.6)
-                        self.turtle.goto(j+.4, i+.5)
-                        
-        self.screen.mainloop()
-    
-    def create_matrix(self, valor):
-        '''
-        This function creates the matrix with a size of rows x columns, and initiates with
-        the last value.
-        '''
-        matrix = []
-        for i in range(self.rows):
-            matrix.append([valor] * self.columns)
-        return matrix    
+class CellState(Enum):
+    HIDDEN = 0
+    REVEALED = 1
+    FLAGGED = 2
+    MINE_EXPLODED = 3
 
+class GameState(Enum):
+    PLAYING = 0
+    WON = 1
+    LOST = 2
 
-    def locate_mines(self):
-        '''
-        This function randomly locates the cells with mines.
-        '''
-        list = []
-        while len(list) < self.mines:
-            i = randrange(self.rows)
-            j = randrange(self.columns)
-            if [i, j] not in list:
-                list.append([i, j])
-                self.board[i][j] = self.MinedCell
+class Colors:
+    # Modern color scheme
+    BACKGROUND = (45, 52, 65)
+    CELL_HIDDEN = (108, 117, 125)
+    CELL_REVEALED = (248, 249, 250)
+    CELL_MINE = (220, 53, 69)
+    CELL_HOVER = (134, 142, 150)
+    BORDER = (73, 80, 87)
+    TEXT_PRIMARY = (33, 37, 41)
+    TEXT_SECONDARY = (108, 117, 125)
+    FLAG = (255, 193, 7)
+    MINE = (52, 58, 64)
+    HEADER_BG = (52, 58, 64)
+    BUTTON_BG = (0, 123, 255)
+    BUTTON_HOVER = (0, 86, 179)
+    SUCCESS = (40, 167, 69)
     
-    def fill_symbols(self):
-        '''
-        This function fills the cells with the corresponding symbols
-        '''
-        rows = len(self.symbol)
-        columns = len(self.symbol[0])
-        for i in range(rows):
-            for j in range(columns):
+    # Number colors
+    NUMBERS = {
+        1: (0, 123, 255),
+        2: (40, 167, 69),
+        3: (220, 53, 69),
+        4: (102, 16, 242),
+        5: (255, 193, 7),
+        6: (255, 108, 180),
+        7: (0, 0, 0),
+        8: (108, 117, 125)
+    }
+
+class ModernMinesweeper:
+    def __init__(self):
+        self.SAVE_FILE = "minesweeper_save.json"
+        self.cell_size = 40
+        self.header_height = 100
+        self.margin = 20
+        
+        # Game state
+        self.reset_game_state()
+        
+        # Fonts
+        self.font_large = pygame.font.Font(None, 32)
+        self.font_medium = pygame.font.Font(None, 24)
+        self.font_small = pygame.font.Font(None, 20)
+        
+        # Animation variables
+        self.hover_cell = None
+        self.animation_time = 0
+        self.reveal_animations = {}
+        
+        self.show_menu = True
+        self.clock = pygame.time.Clock()
+        
+    def reset_game_state(self):
+        self.rows = 9
+        self.cols = 9
+        self.mines = 10
+        self.board = []
+        self.cell_states = []
+        self.mine_positions = set()
+        self.game_state = GameState.PLAYING
+        self.flags_placed = 0
+        self.cells_revealed = 0
+        self.start_time = None
+        self.end_time = None
+        
+    def create_window(self):
+        window_width = self.cols * self.cell_size + 2 * self.margin
+        window_height = self.rows * self.cell_size + self.header_height + 2 * self.margin
+        self.screen = pygame.display.set_mode((window_width, window_height))
+        pygame.display.set_caption("Modern Minesweeper")
+        
+    def initialize_game(self, difficulty):
+        if difficulty == "easy":
+            self.rows, self.cols, self.mines = 9, 9, 10
+        elif difficulty == "medium":
+            self.rows, self.cols, self.mines = 16, 16, 40
+        elif difficulty == "hard":
+            self.rows, self.cols, self.mines = 16, 30, 99
+            
+        self.create_window()
+        self.board = [[0 for _ in range(self.cols)] for _ in range(self.rows)]
+        self.cell_states = [[CellState.HIDDEN for _ in range(self.cols)] for _ in range(self.rows)]
+        self.mine_positions = set()
+        self.game_state = GameState.PLAYING
+        self.flags_placed = 0
+        self.cells_revealed = 0
+        self.start_time = None
+        self.end_time = None
+        self.show_menu = False
+        
+    def place_mines(self, first_click_row, first_click_col):
+        mines_placed = 0
+        while mines_placed < self.mines:
+            row = random.randint(0, self.rows - 1)
+            col = random.randint(0, self.cols - 1)
+            
+            # Don't place mine on first click or if already has mine
+            if (row, col) not in self.mine_positions and (row, col) != (first_click_row, first_click_col):
+                self.mine_positions.add((row, col))
+                self.board[row][col] = -1  # -1 represents mine
+                mines_placed += 1
                 
-                if self.board[i][j] == self.MinedCell:
-                    self.symbol[i][j] = 'Mine'
-                
-                elif self.board[i][j] == self.FreeCell:
-                    number_of_mines = 0
-                    for location in self.CloseLocations(rows, columns, i, j):
-                        if self.board[location[0]][location[1]] == self.MinedCell:
-                            number_of_mines += 1
-                    self.symbol[i][j] = number_of_mines
-
-    def draw_board(self, board):
-        '''
-        This function draws the board of the game.
-        '''
-        for i in range(len(self.symbol)):
-            for j in range(len(self.symbol[0])):
-                if self.cells_shown[i][j] == 0:
-                    self.draw_cell(board, self.symbol, i, j)
-
-    def draw_cell(self, tile, board, i, j):
-        '''
-        This function draws the content of the cells.
-        '''
-        self.drawing = True
-        self.turtle.penup()
-        self.turtle.pencolor('black')
-        self.turtle.goto(j+.5, i)
-        self.turtle.begin_fill()
-        if tile[i][j] == self.HiddenCell:
-            self.turtle.fillcolor('blue')
-            self.turtle.circle(.5)
-        elif tile[i][j] == self.FreeCell:
-            self.turtle.fillcolor('white')
-            self.turtle.circle(.5)
-            self.turtle.goto(j+.5, i+.25)
-            self.turtle.write(board[i][j])
-            self.assistant2[i][j] = self.FreeCell
-        elif tile[i][j] == self.MinedCell:
-            self.turtle.fillcolor('red')
-            self.turtle.circle(.5)
-            self.turtle.goto(j+.5, i+.25)
-            self.turtle.write(board[i][j])
-        self.turtle.end_fill()
-        self.turtle.pendown()
-        self.drawing = False
-    
-    def draw_flag(self, flag, i, j):
-        '''
-        This function draws the flags.
-        '''
-        if flag[i][j] == 1:
-            self.turtle.penup()
-            self.turtle.goto(j+.4, i+.2)
-            self.turtle.pendown()
-            self.turtle.pencolor('yellow')
-            self.turtle.goto(j+.4, i+.8)
-            self.turtle.goto(j+.7, i+.6)
-            self.turtle.goto(j+.4, i+.5)
-        elif flag[i][j] == None:
-            self.turtle.penup()
-            self.turtle.goto(j+.5, i)
-            self.turtle.begin_fill()
-            self.turtle.fillcolor('blue')
-            self.turtle.circle(.5)
-            self.turtle.end_fill()
-    
-    def CloseLocations(self, rows, columns, row, column):
-        '''
-        This function returns the location of the mines close to the cell.
-        '''
-        locations = []
-        if row - 1 >= 0:
-            locations.append((row - 1, column))
-        if column - 1 >= 0:
-            locations.append((row, column - 1))
-        if row - 1 >= 0 and column - 1 >= 0:
-            locations.append((row - 1, column - 1))
-        if column + 1 < columns:
-            locations.append((row, column + 1))
-        if row + 1 < rows:
-            locations.append((row + 1, column))
-        if row + 1 < rows and column + 1 < columns:
-            locations.append((row + 1, column + 1))
-        if row + 1 < rows and column - 1 >= 0:
-            locations.append((row + 1, column - 1))
-        if row - 1 >= 0 and column + 1 < columns:
-            locations.append((row - 1, column + 1))
-        return locations
-           
-    def neighboring_cells(self, selection):
-        '''
-        This function shows the cells without mines.
-        '''
-        rows = len(self.symbol)
-        columns = len(self.symbol[0])
-        for location in self.CloseLocations(rows, columns, selection[0], selection[1]):
-            if location in self.visited_cells:
-                continue
-            self.draw_cell(self.board, self.symbol, location[0], location[1])
-            self.visited_cells.add((location[0], location[1]))
-            self.cells_to_show[location[0]][location[1]] = 1        
-
-    def show_cells(self, i, j):
-        '''
-        This function shows the cells close to the boxes with 0 mines arround.
-        '''
-        repetition = self.columns
+        self.calculate_numbers()
         
-        self.cells_to_show[i][j] = 1
+    def calculate_numbers(self):
+        for row in range(self.rows):
+            for col in range(self.cols):
+                if self.board[row][col] != -1:  # Not a mine
+                    count = 0
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            if dr == 0 and dc == 0:
+                                continue
+                            new_row, new_col = row + dr, col + dc
+                            if (0 <= new_row < self.rows and 0 <= new_col < self.cols 
+                                and self.board[new_row][new_col] == -1):
+                                count += 1
+                    self.board[row][col] = count
+                    
+    def get_cell_at_pos(self, pos):
+        x, y = pos
+        if y < self.header_height + self.margin:
+            return None
         
-        for a in range(repetition):
-            for i in range(len(self.symbol)):
-                for j in range(len(self.symbol[0])):
-                    if self.symbol[i][j] == 0 and self.cells_shown[i][j] == 0 and self.cells_to_show[i][j] == 1:
-                        self.neighboring_cells((i,j))
-                        self.cells_shown[i][j] = 1
+        col = (x - self.margin) // self.cell_size
+        row = (y - self.header_height - self.margin) // self.cell_size
         
-    def left_click(self, x, y):
-        '''
-        This function conects with the event of the left click.
-        '''
-        if self.drawing:
+        if 0 <= row < self.rows and 0 <= col < self.cols:
+            return row, col
+        return None
+        
+    def reveal_cell(self, row, col):
+        if self.cell_states[row][col] != CellState.HIDDEN:
             return
-        self.check(self.flag)
-        [j, i] = [int(x), int(y)]
-        if 0 <= i < len(self.symbol) and 0 <= j < (len(self.symbol[0])):
-            if self.board[i][j] != None and self.flag[i][j] != 1:
-                temporary1 = [i, j]
-                self.assistant = [i, j]
-                self.draw_cell(self.board, self.symbol, temporary1[0], temporary1[1])
-                self.turns += 1
-                self.show_cells(i, j)
             
-            temporary1 = None
-            self.save()
-
-        if self.turns > 0 and self.ending(self.board, self.assistant):
-            self.draw_board(self.board)
-            self.save()
-        else:
-            self.screen.onclick(self.left_click)     
-
-    def right_click(self, x, y):
-        '''
-        This function conects with the event of the right click.
-        '''
-        if self.drawing:
+        if self.start_time is None:
+            self.start_time = pygame.time.get_ticks()
+            
+        self.cell_states[row][col] = CellState.REVEALED
+        self.cells_revealed += 1
+        
+        # Add reveal animation
+        self.reveal_animations[(row, col)] = pygame.time.get_ticks()
+        
+        if self.board[row][col] == -1:  # Hit a mine
+            self.cell_states[row][col] = CellState.MINE_EXPLODED
+            self.game_state = GameState.LOST
+            self.end_time = pygame.time.get_ticks()
+            self.reveal_all_mines()
             return
-        self.check(self.flag)
-        [j, i] = [int(x), int(y)]
-        if 0 <= i < len(self.symbol) and 0 <= j < (len(self.symbol[0])):
-            if self.flag[i][j] == None:
-                self.flag[i][j] = 1
-            elif self.flag[i][j] == 1:
-                self.flag[i][j] = None
-            self.draw_flag(self.flag, i, j)
-            self.save()
             
-        if self.turns > 0 and self.ending(self.board, self.assistant):
-            self.draw_board(self.board)
-            self.save()
-        else:
-            self.screen.onclick(self.left_click)
-
-    def exit(self):
-        print("Goodbye")
-        self.save()
-        self.db.close()
+        if self.board[row][col] == 0:  # Empty cell, reveal neighbors
+            self.reveal_neighbors(row, col)
             
-    def check(self, flag):
-        '''
-        This function checks if you discovered every mine.
-        '''
-        number = 0
-        for i in range(len(flag)):
-            for j in range(len(flag[0])):
-                if flag[i][j] == 1 and self.board[i][j] == True:
-                    number += 1
-        if number == self.mines:
-            return True
-        else:
-            return False
+        # Check win condition
+        if self.cells_revealed + self.mines == self.rows * self.cols:
+            self.game_state = GameState.WON
+            self.end_time = pygame.time.get_ticks()
+            
+    def reveal_neighbors(self, row, col):
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                new_row, new_col = row + dr, col + dc
+                if (0 <= new_row < self.rows and 0 <= new_col < self.cols 
+                    and self.cell_states[new_row][new_col] == CellState.HIDDEN):
+                    self.reveal_cell(new_row, new_col)
+                    
+    def reveal_all_mines(self):
+        for row, col in self.mine_positions:
+            if self.cell_states[row][col] != CellState.MINE_EXPLODED:
+                self.cell_states[row][col] = CellState.REVEALED
                 
-    def ending(self, board, selection):
-        '''
-        Stop the game in the moment that you win or loose.
-        '''
-        if board[selection[0]][selection[1]] == self.MinedCell:
-            print('Game Over')
-            self.end = True
-            return True
-        elif self.check(self.flag):
-            print('You Win')
-            self.end = True
-            return True
-        else:
-            return False
+    def toggle_flag(self, row, col):
+        if self.cell_states[row][col] == CellState.HIDDEN:
+            self.cell_states[row][col] = CellState.FLAGGED
+            self.flags_placed += 1
+        elif self.cell_states[row][col] == CellState.FLAGGED:
+            self.cell_states[row][col] = CellState.HIDDEN
+            self.flags_placed -= 1
+            
+    def draw_menu(self):
+        self.screen.fill(Colors.BACKGROUND)
         
-    def save(self):
-        '''Saves the class minesweeper to the database'''
-        if self.end and "data" in self.db:
-            del self.db["data"]
-        else:
-            d = {"mines":self.mines, "rows":self.rows, "columns":self.columns, "board":self.board, "board2":self.board2, \
-                 "symbol":self.symbol, "flag":self.flag, "cells_to_show":self.cells_to_show, \
-                 "cells_shown":self.cells_shown, "visited_cells":self.visited_cells, \
-                 "turns":self.turns, "assistant":self.assistant, "assistant2":self.assistant2, "fecha":self.today}
-            self.db["data"] = d
-        self.db.sync()
-
-def start_minesweeper():
-    '''
-    Asks the user the difficulty he prefers.
-    '''
-    option = None
-    while option not in [0, 1, 2, 3]:
-        print('Choose an option.')
-        db = shelve.open("minesweeper.dbm")
-        data = db.get("data", None)
+        # Title
+        title = self.font_large.render("MINESWEEPER", True, Colors.CELL_REVEALED)
+        title_rect = title.get_rect(center=(self.screen.get_width()//2, 100))
+        self.screen.blit(title, title_rect)
         
-        if data is not None:
-            today = data["fecha"]
-            dia = today.strftime("%m-%d-%y %I:%M%p")
-            print('0) Cargar juego de {0}'.format(dia))
-        db.close()
-        print('1) Easy (6 mines).')
-        print('2) Normal (8 mines).')
-        print('3) Hard (12 mines).')
-        choice = input('Tell me your choice: ')
+        # Buttons
+        button_width, button_height = 200, 50
+        button_spacing = 70
+        start_y = 200
+        
+        buttons = [
+            ("Easy (9x9, 10 mines)", "easy"),
+            ("Medium (16x16, 40 mines)", "medium"),
+            ("Hard (16x30, 99 mines)", "hard"),
+            ("Load Game", "load")
+        ]
+        
+        mouse_pos = pygame.mouse.get_pos()
+        self.menu_buttons = {}
+        
+        for i, (text, action) in enumerate(buttons):
+            y = start_y + i * button_spacing
+            button_rect = pygame.Rect(
+                self.screen.get_width()//2 - button_width//2, 
+                y, 
+                button_width, 
+                button_height
+            )
+            
+            # Button hover effect
+            color = Colors.BUTTON_HOVER if button_rect.collidepoint(mouse_pos) else Colors.BUTTON_BG
+            pygame.draw.rect(self.screen, color, button_rect, border_radius=8)
+            pygame.draw.rect(self.screen, Colors.BORDER, button_rect, 2, border_radius=8)
+            
+            # Button text
+            button_text = self.font_small.render(text, True, Colors.CELL_REVEALED)
+            text_rect = button_text.get_rect(center=button_rect.center)
+            self.screen.blit(button_text, text_rect)
+            
+            self.menu_buttons[action] = button_rect
+            
+    def draw_header(self):
+        import math  # Import math module for calculations
+        
+        # Header background
+        header_rect = pygame.Rect(0, 0, self.screen.get_width(), self.header_height)
+        pygame.draw.rect(self.screen, Colors.HEADER_BG, header_rect)
+        
+        # Mines remaining
+        mines_remaining = max(0, self.mines - self.flags_placed)
+        mines_text = self.font_medium.render(f"Mines: {mines_remaining:03d}", True, Colors.CELL_REVEALED)
+        self.screen.blit(mines_text, (20, 20))
+        
+        # Timer
+        if self.start_time:
+            if self.end_time:
+                elapsed = (self.end_time - self.start_time) // 1000
+            else:
+                elapsed = (pygame.time.get_ticks() - self.start_time) // 1000
+            timer_text = self.font_medium.render(f"Time: {elapsed:03d}", True, Colors.CELL_REVEALED)
+            timer_rect = timer_text.get_rect(topright=(self.screen.get_width() - 20, 20))
+            self.screen.blit(timer_text, timer_rect)
+        
+        # Status/Reset button - draw stunning emoji faces
+        button_rect = pygame.Rect(self.screen.get_width()//2 - 25, 10, 50, 50)
+        mouse_pos = pygame.mouse.get_pos()
+        button_color = Colors.BUTTON_HOVER if button_rect.collidepoint(mouse_pos) else Colors.BUTTON_BG
+        pygame.draw.rect(self.screen, button_color, button_rect, border_radius=15)
+        pygame.draw.rect(self.screen, Colors.BORDER, button_rect, 2, border_radius=15)
+        
+        # Perfect emoji face design
+        center = button_rect.center
+        face_radius = 22
+        
+        # Premium emoji face with perfect gradients
+        # Multiple shadow layers for depth
+        pygame.draw.circle(self.screen, (220, 180, 80), (center[0] + 2, center[1] + 2), face_radius + 1)  # Outer shadow
+        pygame.draw.circle(self.screen, (255, 223, 0), center, face_radius)  # Perfect emoji yellow
+        
+        # Face highlight for 3D depth
+        highlight_center = (center[0] - 4, center[1] - 4)
+        pygame.draw.circle(self.screen, (255, 240, 100), highlight_center, face_radius // 2, 0)
+        
+        # Face outline
+        pygame.draw.circle(self.screen, (200, 160, 0), center, face_radius, 2)
+        
+        if self.game_state == GameState.WON:
+            # 🤩 Amazing star-struck victory face
+            
+            # Star-struck sparkling eyes
+            # Left star eye
+            star_size = 4
+            left_center = (center[0] - 8, center[1] - 6)
+            
+            # Draw beautiful 5-pointed star
+            star_points_left = []
+            for i in range(10):  # 5 points, 2 coordinates each
+                angle = (i * math.pi) / 5 - math.pi/2  # Start from top
+                if i % 2 == 0:  # Outer points
+                    radius = star_size
+                else:  # Inner points
+                    radius = star_size * 0.4
+                x = left_center[0] + radius * math.cos(angle)
+                y = left_center[1] + radius * math.sin(angle)
+                star_points_left.append((x, y))
+            
+            pygame.draw.polygon(self.screen, (255, 215, 0), star_points_left)  # Gold star
+            pygame.draw.polygon(self.screen, (255, 255, 100), star_points_left, 1)  # Bright outline
+            
+            # Right star eye
+            right_center = (center[0] + 8, center[1] - 6)
+            star_points_right = []
+            for i in range(10):
+                angle = (i * math.pi) / 5 - math.pi/2
+                if i % 2 == 0:
+                    radius = star_size
+                else:
+                    radius = star_size * 0.4
+                x = right_center[0] + radius * math.cos(angle)
+                y = right_center[1] + radius * math.sin(angle)
+                star_points_right.append((x, y))
+            
+            pygame.draw.polygon(self.screen, (255, 215, 0), star_points_right)  # Gold star
+            pygame.draw.polygon(self.screen, (255, 255, 100), star_points_right, 1)  # Bright outline
+            
+            # Huge excited smile - perfectly curved
+            smile_points = []
+            smile_width = 18
+            smile_height = 8
+            for i in range(25):  # More points for smoother curve
+                t = i / 24.0  # 0 to 1
+                angle = math.pi * t  # 0 to π
+                x = center[0] - smile_width//2 + smile_width * t
+                y = center[1] + 4 + smile_height * math.sin(angle)
+                smile_points.append((x, y))
+            
+            # Draw thick, vibrant smile
+            if len(smile_points) > 2:
+                pygame.draw.lines(self.screen, (255, 50, 100), False, smile_points, 4)
+                # Add inner highlight for depth
+                inner_smile = [(x, y-1) for x, y in smile_points[2:-2]]
+                pygame.draw.lines(self.screen, (255, 150, 200), False, inner_smile, 2)
+            
+            # Add sparkle effects around the face
+            sparkles = [
+                (center[0] - 18, center[1] - 12),
+                (center[0] + 18, center[1] - 8),
+                (center[0] - 15, center[1] + 8),
+                (center[0] + 16, center[1] + 12)
+            ]
+            
+            for sparkle_pos in sparkles:
+                # Small 4-pointed sparkle
+                pygame.draw.line(self.screen, (255, 255, 255), 
+                               (sparkle_pos[0] - 3, sparkle_pos[1]), 
+                               (sparkle_pos[0] + 3, sparkle_pos[1]), 2)
+                pygame.draw.line(self.screen, (255, 255, 255), 
+                               (sparkle_pos[0], sparkle_pos[1] - 3), 
+                               (sparkle_pos[0], sparkle_pos[1] + 3), 2)
+            
+        elif self.game_state == GameState.LOST:
+            # 😵 Perfect dizzy/dead face
+            # Spiral dizzy eyes
+            import math
+            
+            # Left spiral eye
+            for i in range(15):
+                angle = i * 0.8
+                radius = i * 0.4
+                x = center[0] - 8 + math.cos(angle) * radius
+                y = center[1] - 6 + math.sin(angle) * radius
+                pygame.draw.circle(self.screen, (180, 50, 50), (int(x), int(y)), max(1, 3 - i//5))
+            
+            # Right spiral eye  
+            for i in range(15):
+                angle = i * 0.8
+                radius = i * 0.4
+                x = center[0] + 8 + math.cos(angle) * radius
+                y = center[1] - 6 + math.sin(angle) * radius
+                pygame.draw.circle(self.screen, (180, 50, 50), (int(x), int(y)), max(1, 3 - i//5))
+            
+            # Perfect "O" shocked mouth
+            mouth_rect = pygame.Rect(center[0] - 6, center[1] + 6, 12, 10)
+            pygame.draw.ellipse(self.screen, (50, 50, 50), mouth_rect)
+            pygame.draw.ellipse(self.screen, (30, 30, 30), (center[0] - 5, center[1] + 7, 10, 8))
+            pygame.draw.ellipse(self.screen, (100, 100, 100), mouth_rect, 2)
+            
+        else:
+            # 😊 Perfect happy emoji face
+            
+            # Beautiful realistic eyes
+            # Left eye
+            eye_white_left = pygame.Rect(center[0] - 12, center[1] - 8, 8, 6)
+            pygame.draw.ellipse(self.screen, (255, 255, 255), eye_white_left)
+            pygame.draw.ellipse(self.screen, (200, 200, 200), eye_white_left, 1)
+            
+            # Left iris and pupil
+            pygame.draw.circle(self.screen, (70, 130, 180), (center[0] - 8, center[1] - 5), 3)  # Blue iris
+            pygame.draw.circle(self.screen, (30, 30, 30), (center[0] - 8, center[1] - 5), 2)     # Pupil
+            pygame.draw.circle(self.screen, (255, 255, 255), (center[0] - 9, center[1] - 6), 1)  # Eye shine
+            
+            # Right eye
+            eye_white_right = pygame.Rect(center[0] + 4, center[1] - 8, 8, 6)
+            pygame.draw.ellipse(self.screen, (255, 255, 255), eye_white_right)
+            pygame.draw.ellipse(self.screen, (200, 200, 200), eye_white_right, 1)
+            
+            # Right iris and pupil
+            pygame.draw.circle(self.screen, (70, 130, 180), (center[0] + 8, center[1] - 5), 3)   # Blue iris
+            pygame.draw.circle(self.screen, (30, 30, 30), (center[0] + 8, center[1] - 5), 2)     # Pupil
+            pygame.draw.circle(self.screen, (255, 255, 255), (center[0] + 7, center[1] - 6), 1)  # Eye shine
+            
+            # Perfect curved smile
+            smile_points = []
+            for i in range(21):
+                angle = 3.14159 * i / 20  # 0 to π
+                x = center[0] - 10 + 20 * i / 20
+                y = center[1] + 6 + 6 * math.sin(angle)
+                smile_points.append((x, y))
+            
+            if len(smile_points) > 2:
+                pygame.draw.lines(self.screen, (220, 80, 80), False, smile_points, 3)
+                
+            # Add subtle pink blush on cheeks
+            pygame.draw.circle(self.screen, (255, 200, 200), (center[0] - 16, center[1] + 2), 4, 0)
+            pygame.draw.circle(self.screen, (255, 180, 180), (center[0] - 16, center[1] + 2), 3, 0)
+            pygame.draw.circle(self.screen, (255, 200, 200), (center[0] + 16, center[1] + 2), 4, 0)
+            pygame.draw.circle(self.screen, (255, 180, 180), (center[0] + 16, center[1] + 2), 3, 0)
+        
+        self.reset_button = button_rect
+        
+        # Menu button
+        menu_text = self.font_small.render("Menu", True, Colors.CELL_REVEALED)
+        menu_rect = pygame.Rect(self.screen.get_width()//2 - 30, 70, 60, 25)
+        menu_color = Colors.BUTTON_HOVER if menu_rect.collidepoint(mouse_pos) else Colors.BUTTON_BG
+        pygame.draw.rect(self.screen, menu_color, menu_rect, border_radius=4)
+        menu_text_rect = menu_text.get_rect(center=menu_rect.center)
+        self.screen.blit(menu_text, menu_text_rect)
+        self.menu_button = menu_rect
+        
+    def draw_cell(self, row, col, x, y):
+        cell_rect = pygame.Rect(x, y, self.cell_size, self.cell_size)
+        state = self.cell_states[row][col]
+        
+        # Cell background - Fixed: flagged cells keep hidden appearance
+        if state == CellState.HIDDEN or state == CellState.FLAGGED:
+            color = Colors.CELL_HOVER if self.hover_cell == (row, col) else Colors.CELL_HIDDEN
+        elif state == CellState.MINE_EXPLODED:
+            color = Colors.CELL_MINE
+        else:
+            color = Colors.CELL_REVEALED
+            
+        pygame.draw.rect(self.screen, color, cell_rect)
+        pygame.draw.rect(self.screen, Colors.BORDER, cell_rect, 1)
+        
+        # Cell content
+        if state == CellState.FLAGGED:
+            # Draw flag with pole
+            pole_x = x + self.cell_size//4
+            flag_top = y + self.cell_size//6
+            flag_bottom = y + 5*self.cell_size//6
+            
+            # Flag pole
+            pygame.draw.line(self.screen, Colors.TEXT_PRIMARY, 
+                           (pole_x, flag_top),
+                           (pole_x, flag_bottom), 2)
+            
+            # Flag triangle
+            flag_points = [
+                (pole_x, flag_top),
+                (pole_x + self.cell_size//2, flag_top + self.cell_size//6),
+                (pole_x, flag_top + self.cell_size//3)
+            ]
+            pygame.draw.polygon(self.screen, Colors.FLAG, flag_points)
+            pygame.draw.polygon(self.screen, (200, 150, 0), flag_points, 1)  # Flag outline
+            
+        elif state == CellState.REVEALED or state == CellState.MINE_EXPLODED:
+            if self.board[row][col] == -1:  # Mine
+                center = (x + self.cell_size//2, y + self.cell_size//2)
+                pygame.draw.circle(self.screen, Colors.MINE, center, self.cell_size//4)
+                # Mine spikes
+                for angle in range(0, 360, 45):
+                    import math
+                    end_x = center[0] + math.cos(math.radians(angle)) * (self.cell_size//3)
+                    end_y = center[1] + math.sin(math.radians(angle)) * (self.cell_size//3)
+                    pygame.draw.line(self.screen, Colors.MINE, center, (end_x, end_y), 2)
+                    
+            elif self.board[row][col] > 0:  # Number
+                number = str(self.board[row][col])
+                color = Colors.NUMBERS.get(self.board[row][col], Colors.TEXT_PRIMARY)
+                text_surface = self.font_medium.render(number, True, color)
+                text_rect = text_surface.get_rect(center=(x + self.cell_size//2, y + self.cell_size//2))
+                self.screen.blit(text_surface, text_rect)
+                
+        # Reveal animation
+        if (row, col) in self.reveal_animations:
+            animation_start = self.reveal_animations[(row, col)]
+            elapsed = pygame.time.get_ticks() - animation_start
+            if elapsed < 200:  # 200ms animation
+                progress = elapsed / 200
+                overlay_alpha = int(255 * (1 - progress))
+                overlay = pygame.Surface((self.cell_size, self.cell_size))
+                overlay.set_alpha(overlay_alpha)
+                overlay.fill(Colors.CELL_HIDDEN)
+                self.screen.blit(overlay, (x, y))
+            else:
+                del self.reveal_animations[(row, col)]
+                
+    def draw_game(self):
+        self.screen.fill(Colors.BACKGROUND)
+        self.draw_header()
+        
+        # Draw grid
+        for row in range(self.rows):
+            for col in range(self.cols):
+                x = self.margin + col * self.cell_size
+                y = self.header_height + self.margin + row * self.cell_size
+                self.draw_cell(row, col, x, y)
+                
+        # Game over overlay
+        if self.game_state != GameState.PLAYING:
+            overlay = pygame.Surface(self.screen.get_size())
+            overlay.set_alpha(128)
+            overlay.fill((0, 0, 0))
+            self.screen.blit(overlay, (0, 0))
+            
+            # Draw custom game over graphics
+            center_x = self.screen.get_width() // 2
+            center_y = self.screen.get_height() // 2
+            
+            if self.game_state == GameState.WON:
+                # Draw trophy icon
+                trophy_color = (255, 215, 0)  # Gold
+                trophy_base = (218, 165, 32)  # Dark gold
+                
+                # Trophy cup
+                cup_rect = pygame.Rect(center_x - 30, center_y - 60, 60, 40)
+                pygame.draw.ellipse(self.screen, trophy_color, cup_rect)
+                pygame.draw.ellipse(self.screen, trophy_base, cup_rect, 3)
+                
+                # Trophy handles
+                pygame.draw.arc(self.screen, trophy_base, (center_x - 45, center_y - 50, 20, 30), 1.57, 4.71, 4)
+                pygame.draw.arc(self.screen, trophy_base, (center_x + 25, center_y - 50, 20, 30), 4.71, 1.57, 4)
+                
+                # Trophy base
+                base_rect = pygame.Rect(center_x - 20, center_y - 20, 40, 15)
+                pygame.draw.rect(self.screen, trophy_base, base_rect, border_radius=3)
+                
+                # Trophy stem
+                stem_rect = pygame.Rect(center_x - 5, center_y - 30, 10, 20)
+                pygame.draw.rect(self.screen, trophy_base, stem_rect)
+                
+                text = "YOU WON!"
+                color = Colors.SUCCESS
+                
+            else:
+                # Draw explosion/bomb icon
+                explosion_color = (255, 69, 0)  # Red-orange
+                
+                # Main explosion circle
+                pygame.draw.circle(self.screen, explosion_color, (center_x, center_y - 20), 25)
+                pygame.draw.circle(self.screen, (255, 140, 0), (center_x, center_y - 20), 20)
+                pygame.draw.circle(self.screen, (255, 215, 0), (center_x, center_y - 20), 15)
+                
+                # Explosion spikes
+                spike_length = 35
+                for angle in range(0, 360, 30):
+                    import math
+                    end_x = center_x + math.cos(math.radians(angle)) * spike_length
+                    end_y = (center_y - 20) + math.sin(math.radians(angle)) * spike_length
+                    start_x = center_x + math.cos(math.radians(angle)) * 20
+                    start_y = (center_y - 20) + math.sin(math.radians(angle)) * 20
+                    pygame.draw.line(self.screen, explosion_color, (start_x, start_y), (end_x, end_y), 4)
+                
+                text = "GAME OVER"
+                color = Colors.CELL_MINE
+                
+            game_over_text = self.font_large.render(text, True, color)
+            text_rect = game_over_text.get_rect(center=(center_x, center_y + 40))
+            self.screen.blit(game_over_text, text_rect)
+            
+    def handle_click(self, pos, button):
+        if self.game_state != GameState.PLAYING:
+            return
+            
+        cell = self.get_cell_at_pos(pos)
+        if cell is None:
+            return
+            
+        row, col = cell
+        
+        if button == 1:  # Left click
+            if self.cell_states[row][col] == CellState.HIDDEN:
+                if not self.mine_positions:  # First click
+                    self.place_mines(row, col)
+                self.reveal_cell(row, col)
+                
+        elif button == 3:  # Right click
+            if self.cell_states[row][col] in [CellState.HIDDEN, CellState.FLAGGED]:
+                self.toggle_flag(row, col)
+                
+    def save_game(self):
+        if self.game_state == GameState.PLAYING and self.start_time:
+            game_data = {
+                'rows': self.rows,
+                'cols': self.cols,
+                'mines': self.mines,
+                'board': self.board,
+                'cell_states': [[state.value for state in row] for row in self.cell_states],
+                'mine_positions': list(self.mine_positions),
+                'flags_placed': self.flags_placed,
+                'cells_revealed': self.cells_revealed,
+                'start_time': self.start_time,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            try:
+                with open(self.SAVE_FILE, 'w') as f:
+                    json.dump(game_data, f)
+            except Exception as e:
+                print(f"Could not save game: {e}")
+                
+    def load_game(self):
         try:
-            option = int(choice)
-        except ValueError:
-            print('Error: choice {0} is not valid.'.format(choice))
-            continue
+            with open(self.SAVE_FILE, 'r') as f:
+                game_data = json.load(f)
+                
+            self.rows = game_data['rows']
+            self.cols = game_data['cols']
+            self.mines = game_data['mines']
+            self.board = game_data['board']
+            self.cell_states = [[CellState(state) for state in row] for row in game_data['cell_states']]
+            self.mine_positions = set(tuple(pos) for pos in game_data['mine_positions'])
+            self.flags_placed = game_data['flags_placed']
+            self.cells_revealed = game_data['cells_revealed']
+            self.start_time = game_data['start_time']
+            
+            self.create_window()
+            self.game_state = GameState.PLAYING
+            self.show_menu = False
+            return True
+            
+        except Exception as e:
+            print(f"Could not load game: {e}")
+            return False
+            
+    def run(self):
+        # Create initial window for menu
+        self.screen = pygame.display.set_mode((600, 500))
+        pygame.display.set_caption("Modern Minesweeper")
         
-        if option == 0 and data is not None:
-            return minesweeper(data["mines"], data["rows"], data["columns"], data["board"], data["board2"], data["symbol"], \
-                              data["flag"], data["cells_to_show"], data["cells_shown"], data["visited_cells"], \
-                              data["turns"], data["assistant"], data["assistant2"])        
-        elif option == 1:
-            mines = 6
-            rows = 6
-            columns = 8
-        elif option == 2:
-            mines = 8
-            rows = 8
-            columns = 10
-        elif option == 3:
-            mines = 15
-            rows = 15
-            columns = 18
-        else:
-            print('Wrong choice.')
-    return Minesweeper(mines, rows, columns)
+        running = True
+        while running:
+            self.animation_time += self.clock.get_time()
+            
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    if not self.show_menu:
+                        self.save_game()
+                    running = False
+                    
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        if not self.show_menu:
+                            self.save_game()
+                        self.show_menu = True
+                        self.screen = pygame.display.set_mode((600, 500))
+                        
+                elif event.type == pygame.MOUSEMOTION:
+                    if not self.show_menu:
+                        cell = self.get_cell_at_pos(event.pos)
+                        self.hover_cell = cell
+                        
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if self.show_menu:
+                        for action, rect in self.menu_buttons.items():
+                            if rect.collidepoint(event.pos):
+                                if action == "load":
+                                    if not self.load_game():
+                                        continue
+                                else:
+                                    self.initialize_game(action)
+                                break
+                    else:
+                        # Check UI buttons
+                        if hasattr(self, 'reset_button') and self.reset_button.collidepoint(event.pos):
+                            difficulty = "easy" if self.mines == 10 else "medium" if self.mines == 40 else "hard"
+                            self.initialize_game(difficulty)
+                        elif hasattr(self, 'menu_button') and self.menu_button.collidepoint(event.pos):
+                            self.save_game()
+                            self.show_menu = True
+                            self.screen = pygame.display.set_mode((600, 500))
+                        else:
+                            self.handle_click(event.pos, event.button)
+                            
+            # Draw
+            if self.show_menu:
+                self.draw_menu()
+            else:
+                self.draw_game()
+                
+            pygame.display.flip()
+            self.clock.tick(60)
+            
+        pygame.quit()
 
-def main():
-    minesweeper = start_minesweeper()
-    minesweeper.start()
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    game = ModernMinesweeper()
+    game.run()
